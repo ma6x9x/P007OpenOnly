@@ -61,7 +61,7 @@
 #define PAYLOAD_SIZE 0xb80
 #define PAIR_COUNT 2048
 #define DRAIN_COUNT 2048
-#define COREML_MODEL_NAME @"XVRC27_254in_1out_addchain"
+#define COREML_MODEL_NAME @"XVRC27_254in_passthrough"
 
 #define PORT_VICTIM_EVERY 4
 #define TAIL_PORTK_COUNT 8
