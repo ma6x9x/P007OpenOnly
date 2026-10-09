@@ -38,7 +38,7 @@ static void p051_log(NSMutableString *buf, NSString *fmt, ...) {
 + (NSString *)tap {
     NSMutableString *log = [NSMutableString string];
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *logPath = [docs stringByAppendingPathComponent:@"p051_aks_log.txt"];
+    NSString *logPath = [docs stringByAppendingPathComponent:@"p051_apfs_xattr_log.txt"];
     g_log_fd = open([logPath UTF8String], O_CREAT | O_WRONLY | O_TRUNC, 0644);
     
     p051_log(log, @"=== P051 TrollRestore + AKS WVEK ===");
@@ -50,6 +50,11 @@ static void p051_log(NSMutableString *buf, NSString *fmt, ...) {
     uint64_t wvek_addr = off->aks_wvek_overflow;
     if (wvek_addr == 0) {
         p051_log(log, @"[-] No aks_wvek_overflow in offsets");
+        if (g_log_fd >= 0) {
+            fcntl(g_log_fd, F_FULLFSYNC);
+            close(g_log_fd);
+            g_log_fd = -1;
+        }
         return log;
     }
     p051_log(log, @"[+] apfs_aks_create_wvek: 0x%llx", wvek_addr);
@@ -79,6 +84,11 @@ static void p051_log(NSMutableString *buf, NSString *fmt, ...) {
         p051_log(log, @"    1. Disable Find My on device");
         p051_log(log, @"    2. Run: python3 p051_trollrestore.py");
         p051_log(log, @"    3. Re-run this app after restore completes");
+        if (g_log_fd >= 0) {
+            fcntl(g_log_fd, F_FULLFSYNC);
+            close(g_log_fd);
+            g_log_fd = -1;
+        }
         return log;
     }
     
@@ -146,6 +156,7 @@ static void p051_log(NSMutableString *buf, NSString *fmt, ...) {
     
     p051_log(log, @"\n=== P051 Complete ===");
     if (g_log_fd >= 0) {
+        fcntl(g_log_fd, F_FULLFSYNC);
         close(g_log_fd);
         g_log_fd = -1;
     }

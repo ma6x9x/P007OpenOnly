@@ -3,7 +3,7 @@ import UIKit
 import Darwin
 
 struct ContentView: View {
-    @State private var text = "Hot: P057 AKS sel0/1 hex. Ident first. One TAP. Prove/parked → More."
+    @State private var text = "Hot: P062 NEON self-test. Ident first. One TAP. Not under lldb."
     @State private var copiedFlash = false
     @State private var running = false
     @State private var showMore = false
@@ -28,15 +28,18 @@ struct ContentView: View {
 
                 VStack(spacing: 8) {
                     HStack(spacing: 8) {
+                        hotButton("P062 NEON", id: "p062")
                         hotButton("P057 AKS slide", id: "p057")
+                    }
+                    HStack(spacing: 8) {
                         hotButton("P050 buflet", id: "p050")
-                    }
-                    HStack(spacing: 8) {
                         hotButton("64 p017v2", id: "p017v2")
-                        hotButton("LuminaKRW", id: "luminakrw")
                     }
                     HStack(spacing: 8) {
+                        hotButton("LuminaKRW", id: "luminakrw")
                         hotButton("P053 NECP", id: "p053")
+                    }
+                    HStack(spacing: 8) {
                         hotButton("P045 VNOP census", id: "p045")
                     }
                     HStack(spacing: 8) {
@@ -94,13 +97,15 @@ struct ContentView: View {
             NavigationStack {
                 List {
                     Section("NEW") {
+                        moreRow("P062 NEON exception-state self-test (not KRW, not hasKread)", "p062")
                         moreRow("P057 AKS 65343 sel0/1 hex (not 163-sel, not hasKread)", "p057")
                         moreRow("P050 buflet UAF v3 (not 65349)", "p050")
-                        moreRow("P051 gamed/AKS xattr (v3)", "p051")
-                        moreRow("P052 nstream extend v2", "p052")
+                        moreRow("P019 64749 iopl MAP (size mismatch, not 65349)", "p019")
+                        moreRow("P051 gamed/AKS xattr (v3) — CLOSED", "p051")
+                        moreRow("P052 nstream extend — CLOSED (EFBIG)", "p052")
                         moreRow("P053 NECP connect×close v2", "p053")
                         moreRow("P054 APFS reap list", "p054")
-                        moreRow("P055 IOSurface UPL", "p055")
+                        moreRow("P055 IOSurface UPL (43684 MAP)", "p055")
                     }
                     Section("ClearSword KRW (phys_oob → PCB)") {
                         moreRow("CS KRW. mapped theory (runKRW, 23F77 offsets)", "cskrw")
@@ -228,6 +233,7 @@ struct ContentView: View {
             "p044": "p044_aks_kaslr_reach_log.txt",
             "p057": "p057_aks_deserialize_log.txt",
             "aks": "p057_aks_deserialize_log.txt",
+            "p062": "p062_neon_selftest_log.txt",
             "p045": "p045_kmsg_recv_oracle_log.txt",
             "p046": "p046_f77_patch_oracle_log.txt",
             "p009iopl": "p009_iopl_merge_log.txt",
@@ -253,7 +259,7 @@ struct ContentView: View {
             "p015": "p015_log.txt",
             "p016": "p016_log.txt",
             "p018": "p018_log.txt",
-            "p019": "p019_64749_log.txt",
+            "p019": "p019v2_64749_corrupt_log.txt",
             "p020": "p020_magazine_reclaim_log.txt",
             "p020v2": "p020v2_magazine_drain_log.txt",
             "p021": "p021_agx_stage_mask_log.txt",
@@ -266,7 +272,9 @@ struct ContentView: View {
             "necprace": "necp_race_log.txt",
             "p050": "p050_getattrlist_oob_log.txt",
             "p051": "p051_apfs_xattr_log.txt",
-            "p052": "p052_nstream_extend_log.txt",
+            "p052": "p052_nstream_log.txt",
+            "p054": "p054_reap_list_log.txt",
+            "p055": "p055_iosurface_upl_log.txt",
             "iopl": "iopl_leak_log.txt",
             "aio": "aio_uaf_log.txt",
             "t018": "t018_cow_log.txt",
@@ -308,13 +316,28 @@ struct ContentView: View {
             return Self.lastLogSession(raw)
         }
 
-        if let name = preferredName, let body = loadLog(named: name) {
-            text = "=== RECOVERED (last TAP \(lastTapId ?? "?") → \(name)) ===\n"
-                + P007Board.shared().kreadSignal + "\n"
-                + body
-                + "\n=== end ===\n"
-            kreadSignal = P007Board.shared().kreadSignal
-            return
+        // Writers renamed (p051 aks→apfs_xattr, p052 nstream_extend→nstream).
+        // Try the mapped name, then leftover filenames from older builds.
+        let tapToLogAlias: [String: [String]] = [
+            "p051": ["p051_aks_log.txt", "p051_apfs_xattr_log.txt"],
+            "p052": ["p052_nstream_extend_log.txt", "p052_nstream_log.txt"],
+            "p019": ["p019_64749_log.txt", "p019v2_64749_corrupt_log.txt"],
+            "p062": ["p06x_P062_log.txt", "p062_neon_selftest_log.txt"],
+        ]
+        var recoverNames: [String] = []
+        if let name = preferredName { recoverNames.append(name) }
+        if let tid = lastTapId, let alts = tapToLogAlias[tid] {
+            for a in alts where !recoverNames.contains(a) { recoverNames.append(a) }
+        }
+        for name in recoverNames {
+            if let body = loadLog(named: name) {
+                text = "=== RECOVERED (last TAP \(lastTapId ?? "?") → \(name)) ===\n"
+                    + P007Board.shared().kreadSignal + "\n"
+                    + body
+                    + "\n=== end ===\n"
+                kreadSignal = P007Board.shared().kreadSignal
+                return
+            }
         }
 
         // Fallback: newest mtime among probe logs (old behavior)
@@ -355,8 +378,8 @@ struct ContentView: View {
         let body = Self.lastLogSession(raw)
         var note = ""
         if let tid = lastTapId, preferredName != nil, win.url.lastPathComponent != preferredName {
-            note = "(NOTE: last TAP was \(tid) → wanted \(preferredName!); "
-                + "showing newest durable log instead — often an older completed p024.)\n"
+            note = "(NOTE: last TAP was \(tid) → mapped \(preferredName!); "
+                + "file missing, showing newest durable \(win.url.lastPathComponent).)\n"
         }
         text = "=== RECOVERED (newest mtime: \(win.url.lastPathComponent)) ===\n"
             + note
@@ -481,7 +504,7 @@ struct ContentView: View {
         }
 
         DispatchQueue.global(qos: raceHot ? .userInitiated : .utility).async {
-            let result: String
+            var result: String
             switch id {
             case "ident":       result = DeviceIdentProbe.runIdentity()
             case "board":       result = P007Board.tap()
@@ -564,20 +587,26 @@ struct ContentView: View {
             case "p039":
                 result = P039AVEExploitTrigger.tap()
             case "p051":
-                P051APFSXattr.tap()
-                result = Self.readFreshLog(
-                    named: "p051_apfs_xattr_log.txt",
-                    missing: "p051 finished but log missing")
+                result = P051APFSXattr.tap()
+                if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result = Self.readFreshLog(
+                        named: "p051_apfs_xattr_log.txt",
+                        missing: "p051 finished but log missing")
+                }
             case "p052":
-                P052APFSNstream.tap()
-                result = Self.readFreshLog(
-                    named: "p052_nstream_extend_log.txt",
-                    missing: "p052 finished but log missing")
+                result = P052APFSNstream.tap()
+                if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result = Self.readFreshLog(
+                        named: "p052_nstream_log.txt",
+                        missing: "p052 finished but log missing")
+                }
             case "p053", "P053":
-                P053NECPDoubleFree.tap()
-                result = Self.readFreshLog(
-                    named:  "p053_necp_dfree_log.txt",
-                    missing: "p053 finished but log missing")
+                result = P053NECPDoubleFree.tap()
+                if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result = Self.readFreshLog(
+                        named:  "p053_necp_dfree_log.txt",
+                        missing: "p053 finished but log missing")
+                }
             case "p027":
                 result = P027MetalCallback.tap()
             case "p028":
@@ -620,6 +649,13 @@ struct ContentView: View {
                 result = P044AksKaslrReach.tap()
             case "p057", "aks":
                 result = P057AksDeserialize.tap()
+            case "p062":
+                result = P062NEONSelfTest.tap()
+                if result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result = Self.readFreshLog(
+                        named: "p062_neon_selftest_log.txt",
+                        missing: "p062 finished but log missing")
+                }
             case "p045":
                 result = P045HybridMap.tap()
             case "p046":

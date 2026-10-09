@@ -54,4 +54,5 @@
 #import "P054APFSReapList.h"
 #import "P055IOSurfaceUPL.h"
 #import "P057AksDeserialize.h"
+#import "P062NEONSelfTest.h"
 #import "P007Board.h"

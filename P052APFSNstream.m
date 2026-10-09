@@ -92,7 +92,9 @@ static void p052_log(NSMutableString *buf, NSString *fmt, ...) {
                    sizeof(buf), (long long)off, wr, errno);
         
         if (wr < 0 && errno == EFBIG) {
-            p052_log(log, @"  ★ EFBIG hit! This is the target overflow point. ★");
+            p052_log(log, @"  EFBIG (27): kernel rejected offset. Fail-closed, not overflow.");
+        } else if (wr < 0 && errno == ENOSPC) {
+            p052_log(log, @"  ENOSPC (28): no space / quota. Not nstream overflow.");
         }
     }
     

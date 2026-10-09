@@ -1,0 +1,32 @@
+{
+  "storage" : "model.espresso.weights",
+  "analyses" : {
+
+  },
+  "properties" : {
+
+  },
+  "format_version" : 200,
+  "metadata_in_weights" : [
+
+  ],
+  "layers" : [
+    {
+      "bottom" : "input",
+      "alpha" : 2,
+      "operation" : 1,
+      "beta" : 0,
+      "weights" : {
+
+      },
+      "fused_relu" : 0,
+      "debug_info" : "mul2",
+      "top" : "output",
+      "type" : "elementwise",
+      "name" : "mul2",
+      "attributes" : {
+        "is_output" : 1
+      }
+    }
+  ]
+}

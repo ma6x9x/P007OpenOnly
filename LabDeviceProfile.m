@@ -110,9 +110,9 @@ const char *LabDeviceProfile_sku_string(LabSku sku) {
 + (NSString *)proveMatrix {
     return @"prove matrix 23F77:\n"
            @"  hasKread=NO until commitSlide kread32(kbase)==MH_MAGIC_64\n"
-           @"  LIVE: P057 65343 KASLR sel0/1; P044 43748 occupancy write; 64788 Facet A 0x2be oracle\n"
+           @"  LIVE: P057 65343 KASLR sel0/1; P044 43748 occupancy write; 64788 Facet A 0x2be oracle; P062 NEON userspace self-test (not hasKread)\n"
            @"  CLOSED: 84523 sandbox (P057/P051/P052); P045 recv; LightSword last-wire GPU OOM; type-3 PACGA\n"
-           @"  PARKED: 28968 reap; 163-sel; 0x800; hop-1; AfterKread; P062\n";
+           @"  PARKED: 28968 reap; 163-sel; 0x800; hop-1; AfterKread\n";
 }
 + (NSString *)slideDestMap { return @"43724 pager dest unnamed; #536=22\n"; }
 + (NSString *)writeClassMap { return @"W not found this factory. F≠W. 84607 AVE race class.\n"; }

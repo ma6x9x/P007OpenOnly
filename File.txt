@@ -1,0 +1,6 @@
+83_P007_VS_LUMINA_APP.txt
+Agent snapshot 2026-10-07: ~/Desktop/lumina_primitives/97_AGENT_HANDOFF_2026-10-07.txt
+IPS classify: ~/Desktop/lumina_primitives/98_OCT6_PANIC_CHAIN.txt
+P007Board + P045 v16 + P057 bounded sel0/1 landed. hasKread=NO.
+P062 NEON self-test v1 landed (userspace Mach only, not KRW). Log: p062_neon_selftest_log.txt. Do not run under lldb.
+P044 BUILD p044-coreml-v25-neonwitness: v24 engine + 96 NEON witnesses + inline-rejection (kind 4) + corrupt_msgh_size. Isolation TAP. Not hasKread.
