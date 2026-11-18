@@ -29,6 +29,8 @@ const char *LabDeviceProfile_sku_string(LabSku sku) {
         case LabSkuA12X_23G71: return "A12X_23G71";
         case LabSkuA12X_other: return "A12X_other";
         case LabSkuXR_22H311:  return "XR_22H311";
+        case LabSkuT8150_24B156: return "T8150_24B156";
+        case LabSkuT8150_other: return "T8150_other";
         case LabSkuA14_23F77:  return "A14_23F77";
         case LabSkuA14_other:  return "A14_other";
         default:               return "Unknown";
@@ -52,6 +54,9 @@ const char *LabDeviceProfile_sku_string(LabSku sku) {
     if (a12x && [v isEqualToString:@"23G71"]) return LabSkuA12X_23G71;
     if (a12x) return LabSkuA12X_other;
     if (xr) return LabSkuXR_22H311;
+    BOOL i182 = [m isEqualToString:@"iPhone18,2"];
+    if (i182 && [v isEqualToString:@"24B156"]) return LabSkuT8150_24B156;
+    if (i182 && ([v hasPrefix:@"24A"] || [v hasPrefix:@"24B"])) return LabSkuT8150_other;
     return LabSkuUnknown;
 }
 
@@ -62,6 +67,8 @@ const char *LabDeviceProfile_sku_string(LabSku sku) {
         case LabSkuA12X_23G71: return @"iPad8,* A12X / 23G71";
         case LabSkuA12X_other: return @"iPad8,* A12X / not 23G71";
         case LabSkuXR_22H311:  return @"XR A12 / 18.7.x FIELD#";
+        case LabSkuT8150_24B156: return @"iPhone18,2 T8150 / 24B156";
+        case LabSkuT8150_other: return @"iPhone18,2 T8150 / other 24*";
         default:               return @"unknown";
     }
 }

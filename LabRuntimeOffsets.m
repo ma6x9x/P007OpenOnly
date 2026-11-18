@@ -1,6 +1,7 @@
 #define LAB_OFFSETS_NO_REDIRECT 1
 #import "A14_23F77_LabOffsets.h"
 #import "A12X_23G71_LabOffsets.h"
+#import "T8150_24B156_LabOffsets.h"
 #import "LabRuntimeOffsets.h"
 #import "LabDeviceProfile.h"
 
@@ -133,6 +134,25 @@ static LabOffTab gXR = {
     .static_base = 0xFFFFFFF007004000ULL,
 };
 
+
+
+/* iPhone18,2 sibling 24A*/24B* — static_base only (do not paste 24B156 VAs). */
+static LabOffTab gT8150_other = {
+    .tag = "T8150_other",
+    .static_base = T8150_24B156_STATIC_BASE,
+};
+
+static LabOffTab gT8150_24B156 = {
+    .tag = "T8150_24B156",
+    .sysmem_md = T8150_24B156_IOGPU_SYSMEM_MD,
+    .queue_create_sel = T8150_24B156_IOGPU_QUEUECREATE_SEL,
+    .submit_sel = T8150_24B156_IOGPU_SUBMIT_SEL,
+    .queue_leak = T8150_24B156_IOGPU_QUEUE_LEAK,
+    .res_size = 0x4000u,
+    .socket_usecount = 0x23c,
+    .static_base = T8150_24B156_STATIC_BASE,
+};
+
 const LabOffTab *LabOff(void) {
     switch (LabDeviceProfile_sku()) {
         case LabSkuA12X_23G71:
@@ -140,6 +160,10 @@ const LabOffTab *LabOff(void) {
             return &gA12X;
         case LabSkuXR_22H311:
             return &gXR;
+        case LabSkuT8150_24B156:
+            return &gT8150_24B156;
+        case LabSkuT8150_other:
+            return &gT8150_other;
         case LabSkuA14_23F77:
         case LabSkuA14_other:
         default:

@@ -10,6 +10,8 @@ typedef NS_ENUM(NSInteger, LabSku) {
     LabSkuA12X_23G71,
     LabSkuA12X_other,
     LabSkuXR_22H311,
+    LabSkuT8150_24B156, /* iPhone18,2 + 24B156 */
+    LabSkuT8150_other,
 };
 
 LabSku LabDeviceProfile_sku(void);
